@@ -1,0 +1,104 @@
+# Use standard parameterisation with mu, lambda
+# Number of censored observations
+data {
+ for (i in 1:N){
+ zeros[i] = 0
+ }
+ for (j in 1:M){
+ zeros_j[j] = 0
+ }
+ C = 10000
+}
+
+model{
+  for (i in 1:N){
+  zeros[i] ~ dpois(zeros.mean[i])
+  zeros.mean[i] = -l[i] + C
+  # For calculating CDF
+  u1[i] = pow((lambda/y[i]), 1/2)*(y[i]/mu - 1)
+  u2[i] = -1*pow((lambda/y[i]), 1/2)*(y[i]/mu + 1)
+  cdf[i] = pnorm(u1[i], 0, 1) + exp((2*lambda)/mu)*pnorm(u2[i], 0, 1)
+  # Log-likelihood 
+  l[i] = ifelse(isCensored[i],
+       log(1-cdf[i]),
+       0.5*(log(lambda) - log(2*3.1416) - 3*log(y[i])) -
+       0.5*lambda*pow((y[i] - mu), 2)/(pow(mu, 2)*y[i])
+       )
+    }
+    
+  # Now we do the incremental slip-rate data
+  for (j in 1:M){
+  # Zeros trick
+  zeros_j[j] ~ dpois(zeros_j.mean[j])
+  zeros_j.mean[j] = -lt[j] + C
+  # Now we use the additive property of the inverse Gaussian distribution
+  # for i in (1,2,...n), Sum(X_i) = IG(n*mu, n^2*lambda)
+  n_events_cont[j] = V[j]/throw_per_event
+  n_events[j] = dround((V[j]/throw_per_event), 0)
+  ut1[j] = pow((pow(n_events[j],2)*lambda/T[j]), 1/2)*(T[j]/(n_events[j]*mu) - 1)
+  ut2[j] = -1*pow((pow(n_events[j],2)*lambda/T[j]), 1/2)*(T[j]/(n_events[j]*mu) + 1)
+  cdft[j] = pnorm(ut1[j], 0, 1) + exp((2*pow(n_events[j], 2)*lambda)/(n_events[j]*mu))*pnorm(ut2[j], 0, 1)
+  # log-likelihood - censored form is kept although we aren't using this at present
+  lt[j] = ifelse(isSlipCensored[j],
+  	log(1-cdft[j]),
+	0.5*(log(pow(n_events[j], 2)*lambda) - log(2*3.1416) - 3*log(T[j])) -
+	0.5*pow(n_events[j], 2)*lambda*pow((T[j]-n_events[j]*mu), 2)/(pow((n_events[j]*mu), 2)*T[j])
+	)
+  # Uninformative priors for V and T
+  V[j] ~ dunif(0, 50)  #'True' offset value
+  T[j] ~ dunif(0, 500)  #'True' age value
+  }
+
+# Implement error models on T (Age of surface) and V (Vertical offset) 
+# and ensure monotonically increasing offset and ages
+# Then get the incremental values (V[i], T[i]), what we want to model
+# Here V_sum[i] is the 'true' value of the observed cumulative
+# offset V_obs[i]. Cumulative offset samples are constrained to
+# be monotonically increasing by truncation at upper level
+# Note 1 is largest and oldest offset, M is smallest.
+V_obs[1] ~ dnorm(V_sum[1], V_tau[1])T(0,)
+T_obs[1] ~ dnorm(T_sum[1], T_tau[1])T(0,)
+for (j in 2:M){
+    V_obs[j] ~ dnorm(V_sum[j], V_tau[j])T(0,V_sum[j-1]-1e-8)
+    T_obs[j] ~ dnorm(T_sum[j], T_tau[j])T(0,T_sum[j-1]-1e-8)
+    }
+#V_sum is the sum of incremental offsets    
+V_sum[M] = V[M]
+T_sum[M] = T[M]
+for (j in 1:(M-1)){
+    # We want to index in reverse order, i.e. M-j
+    V_sum[M-j] ~ dsum(V[M-j], V_sum[M-j+1])
+    T_sum[M-j] ~ dsum(T[M-j], T_sum[M-j+1])
+    }
+
+
+# Priors
+#alpha ~ dunif(0,10)
+alpha ~ dnorm(1, 0.0625)T(0,) # equivalent to sigma=4
+lambda = mu/pow(alpha,2)
+#mu ~ dunif(0, 150)
+mu ~ dnorm(10,4e-4)T(0,)
+# Try defining vaguely informative mu based on largest, oldest offset
+throw_per_event ~ dlnorm(0.66,16.5)
+
+# Here we take a random sample from the earthquake chronologies
+# Note that dcat is very slow for large N_MC, so new version
+# below this constructs indices by using dcat of lengths 10
+# and then constructing the indices - NOTE this must
+# be consistent with the number of MC samples of the earthquake record
+# passed to the jags models
+ones = rep(1/10, 10)
+ones_ind ~ dcat(ones[])
+tens = rep(1/10, 10)
+tens_ind ~ dcat(tens[])
+hunds = rep(1/10, 10)
+hunds_ind ~ dcat(hunds[])
+thous = rep(1/10, 10)
+thous_ind ~ dcat(thous[])
+y_ind = (thous_ind - 1)*1000 + (hunds_ind-1)*100 + (tens_ind - 1)*10 + (ones_ind - 1) +1
+
+y = Y_obs[y_ind,] # Random sample of single realisation of eq record
+
+# Track MRE
+mre = MRE[y_ind]
+}
